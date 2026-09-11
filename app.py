@@ -7,7 +7,33 @@ from datetime import datetime, timedelta
 # 모바일 화면 비율을 고려하여 layout="centered" 또는 기본값 사용
 st.set_page_config(page_title="생활관 종합 결산", page_icon="📱")
 
-DB_NAME = 'squad_v4.db'
+# --- 1. 상태 관리: 초기 라우팅 (접속 화면 제어) ---
+if 'unit' not in st.session_state:
+    st.session_state.unit = None
+if 'squad' not in st.session_state:
+    st.session_state.squad = None
+if 'active_seat' not in st.session_state:
+    st.session_state.active_seat = None
+if 'edit_outing_id' not in st.session_state:
+    st.session_state.edit_outing_id = None
+
+# 접속 전(None)일 경우 초기화면 렌더링 후 시스템 중지(st.stop)
+if st.session_state.unit is None or st.session_state.squad is None:
+    st.title("🪖 부대 및 생활관 선택")
+    st.markdown("결산을 진행할 소속을 선택하여 주십시오.")
+    
+    sel_unit = st.selectbox("소속 포대", ["1포대", "2포대", "3포대", "본부포대"])
+    sel_squad = st.selectbox("생활관", ["1생활관", "2생활관", "3생활관"])
+    
+    if st.button("입장하기", type="primary", use_container_width=True):
+        st.session_state.unit = sel_unit
+        st.session_state.squad = sel_squad
+        st.rerun()
+    st.stop() # 사용자가 입장하기 전까지 아래의 코드는 실행되지 않음
+
+# --- 2. 동적 데이터베이스 할당 (메모리 파티션) ---
+# 선택한 소속에 따라 독립적인 DB 파일 생성 (예: squad_v5_본부포대_3생활관.db)
+DB_NAME = f"squad_v5_{st.session_state.unit}_{st.session_state.squad}.db"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -33,12 +59,18 @@ def clean_past_data():
 init_db()
 clean_past_data()
 
-# 상태 관리 (State Management)
-if 'active_seat' not in st.session_state:
-    st.session_state.active_seat = None
-if 'edit_outing_id' not in st.session_state:
-    st.session_state.edit_outing_id = None # 수정 모드 상태 추적
+# --- 3. 사이드바 (소속 변경 및 로그아웃) ---
+with st.sidebar:
+    st.markdown(f"### 📍 현재 위치\n**{st.session_state.unit} {st.session_state.squad}**")
+    if st.button("🔄 다른 생활관 선택", use_container_width=True):
+        # 세션 초기화 및 첫 화면 복귀
+        st.session_state.unit = None
+        st.session_state.squad = None
+        st.session_state.active_seat = None
+        st.session_state.edit_outing_id = None
+        st.rerun()
 
+# --- 4. 메인 대시보드 로직 ---
 conn = sqlite3.connect(DB_NAME)
 members_df = pd.read_sql_query("SELECT * FROM members", conn)
 conn.close()
@@ -50,9 +82,8 @@ for _, row in members_df.iterrows():
     seat_map[row['seat_number']] = full_name
     member_names.append(full_name)
 
-st.title("📱 생활관 결산 대시보드")
+st.title(f"📱 {st.session_state.unit} {st.session_state.squad} 결산")
 
-# --- 1. 생활관 자리 배치도 ---
 st.markdown("### 🛏️ 자리 선택")
 
 for row_idx in range(5):
@@ -64,7 +95,7 @@ for row_idx in range(5):
         if seat_left in seat_map:
             if st.button(f"자리 {seat_left}\n\n**{seat_map[seat_left]}**", key=f"s_{seat_left}", use_container_width=True):
                 st.session_state.active_seat = seat_left
-                st.session_state.edit_outing_id = None # 다른 자리 클릭 시 수정 모드 초기화
+                st.session_state.edit_outing_id = None 
         else:
             if st.button(f"자리 {seat_left}\n\n(비어있음)", key=f"s_{seat_left}", use_container_width=True):
                 st.session_state.active_seat = seat_left
@@ -82,7 +113,6 @@ for row_idx in range(5):
 
 st.markdown("---")
 
-# --- 2. 개별 현황 동적 폼 ---
 if st.session_state.active_seat:
     seat = st.session_state.active_seat
     if seat in seat_map:
@@ -90,26 +120,20 @@ if st.session_state.active_seat:
         st.markdown(f"### 👉 [자리 {seat}] **{member}**")
         
         with st.expander("✈️ 출타 등록 및 조회", expanded=True):
-            
-            # [ 상태 머신: 수정 모드(Edit) vs 입력 모드(Write) ]
             if st.session_state.edit_outing_id is not None:
                 st.markdown("#### ✏️ 출타 수정 모드")
                 edit_id = st.session_state.edit_outing_id
                 
-                # 기존 데이터 불러오기
                 conn = sqlite3.connect(DB_NAME)
                 edit_df = pd.read_sql_query("SELECT * FROM outings WHERE id=?", conn, params=(edit_id,))
                 conn.close()
                 
                 if not edit_df.empty:
                     e_row = edit_df.iloc[0]
-                    # Selectbox 기본값 인덱스 설정
                     types = ["휴가", "평일외출", "주말외출", "주말외박"]
                     e_idx = types.index(e_row['type']) if e_row['type'] in types else 0
                     
                     out_type = st.selectbox("출타 종류", types, index=e_idx, key="e_type")
-                    
-                    # 날짜 문자열을 날짜 객체로 변환
                     s_date_obj = datetime.strptime(e_row['start_date'], "%Y-%m-%d").date()
                     e_date_obj = datetime.strptime(e_row['end_date'], "%Y-%m-%d").date()
                     
@@ -136,7 +160,7 @@ if st.session_state.active_seat:
                                      (out_type, str(start_d), str(end_d), leave_t, dest, edit_id))
                         conn.commit()
                         conn.close()
-                        st.session_state.edit_outing_id = None # 수정 모드 종료
+                        st.session_state.edit_outing_id = None
                         st.toast("✅ 수정이 완료되었습니다.")
                         time.sleep(0.5)
                         st.rerun()
@@ -144,7 +168,6 @@ if st.session_state.active_seat:
                         st.session_state.edit_outing_id = None
                         st.rerun()
             else:
-                # 일반 입력 모드
                 out_type = st.selectbox("출타 종류", ["휴가", "평일외출", "주말외출", "주말외박"])
                 if out_type in ["평일외출", "주말외출"]:
                     out_date = st.date_input("출타일")
@@ -174,7 +197,6 @@ if st.session_state.active_seat:
                 
             st.markdown("---")
             
-            # [디스플레이 (피드백) 영역]
             st.write(f"📋 **등록된 출타 목록 ({member})**")
             conn = sqlite3.connect(DB_NAME)
             member_outings = pd.read_sql_query("SELECT id, type, start_date, end_date, leave_type, dest FROM outings WHERE member=?", conn, params=(member,))
@@ -183,8 +205,6 @@ if st.session_state.active_seat:
             if not member_outings.empty:
                 for _, row in member_outings.iterrows():
                     d_str = f"({row['start_date']})" if row['start_date'] == row['end_date'] else f"({row['start_date']}~{row['end_date']})"
-                    
-                    # 텍스트, 수정버튼, 삭제버튼 비율 (모바일 최적화)
                     col_txt, col_edit, col_del = st.columns([5, 1, 1])
                     with col_txt:
                         st.caption(f"{row['type']} {d_str} / {row['leave_type']} / {row['dest']}")
@@ -198,7 +218,6 @@ if st.session_state.active_seat:
                             conn.execute("DELETE FROM outings WHERE id=?", (row['id'],))
                             conn.commit()
                             conn.close()
-                            # 만약 수정 중인 항목을 삭제했다면 상태도 초기화
                             if st.session_state.edit_outing_id == row['id']:
                                 st.session_state.edit_outing_id = None
                             st.rerun()
@@ -254,7 +273,6 @@ else:
 
 st.markdown("---")
 
-# --- 3. 그룹 현황 입력 (저장 즉시 렌더링 동기화) ---
 st.markdown("### 📝 종합 현황 등록")
 
 with st.expander("⬆️ 병기본 훈련 등록"):
@@ -318,7 +336,6 @@ with st.expander("🍔 배달음식 등록"):
 
 st.markdown("---")
 
-# --- 4. 자동 생성 결산 메시지 ---
 st.markdown("### 📩 결산 메시지 복사")
 
 conn = sqlite3.connect(DB_NAME)
