@@ -33,8 +33,11 @@ def clean_past_data():
 init_db()
 clean_past_data()
 
+# 상태 관리 (State Management)
 if 'active_seat' not in st.session_state:
     st.session_state.active_seat = None
+if 'edit_outing_id' not in st.session_state:
+    st.session_state.edit_outing_id = None # 수정 모드 상태 추적
 
 conn = sqlite3.connect(DB_NAME)
 members_df = pd.read_sql_query("SELECT * FROM members", conn)
@@ -61,17 +64,21 @@ for row_idx in range(5):
         if seat_left in seat_map:
             if st.button(f"자리 {seat_left}\n\n**{seat_map[seat_left]}**", key=f"s_{seat_left}", use_container_width=True):
                 st.session_state.active_seat = seat_left
+                st.session_state.edit_outing_id = None # 다른 자리 클릭 시 수정 모드 초기화
         else:
             if st.button(f"자리 {seat_left}\n\n(비어있음)", key=f"s_{seat_left}", use_container_width=True):
                 st.session_state.active_seat = seat_left
+                st.session_state.edit_outing_id = None
                 
     with c_right:
         if seat_right in seat_map:
             if st.button(f"자리 {seat_right}\n\n**{seat_map[seat_right]}**", key=f"s_{seat_right}", use_container_width=True):
                 st.session_state.active_seat = seat_right
+                st.session_state.edit_outing_id = None
         else:
             if st.button(f"자리 {seat_right}\n\n(비어있음)", key=f"s_{seat_right}", use_container_width=True):
                 st.session_state.active_seat = seat_right
+                st.session_state.edit_outing_id = None
 
 st.markdown("---")
 
@@ -83,35 +90,91 @@ if st.session_state.active_seat:
         st.markdown(f"### 👉 [자리 {seat}] **{member}**")
         
         with st.expander("✈️ 출타 등록 및 조회", expanded=True):
-            out_type = st.selectbox("출타 종류", ["휴가", "평일외출", "주말외출", "주말외박"])
-            if out_type in ["평일외출", "주말외출"]:
-                out_date = st.date_input("출타일")
-                start_d = end_d = out_date
-            elif out_type == "주말외박":
-                out_date = st.date_input("출타일 (복귀일은 내일로 자동설정)")
-                start_d = out_date
-                end_d = out_date + timedelta(days=1)
-                st.info(f"💡 복귀일: {end_d.strftime('%Y-%m-%d')}")
-            else:
-                c_d1, c_d2 = st.columns(2)
-                start_d = c_d1.date_input("시작일")
-                end_d = c_d2.date_input("종료일")
-                
-            leave_t = st.text_input("휴가 종류 (예: 연가, 포상)")
-            dest = st.text_input("행선지")
             
-            if st.button("출타 추가", type="primary", use_container_width=True):
+            # [ 상태 머신: 수정 모드(Edit) vs 입력 모드(Write) ]
+            if st.session_state.edit_outing_id is not None:
+                st.markdown("#### ✏️ 출타 수정 모드")
+                edit_id = st.session_state.edit_outing_id
+                
+                # 기존 데이터 불러오기
                 conn = sqlite3.connect(DB_NAME)
-                conn.execute("INSERT INTO outings (member, type, start_date, end_date, leave_type, dest) VALUES (?,?,?,?,?,?)", 
-                             (member, out_type, str(start_d), str(end_d), leave_t, dest))
-                conn.commit()
+                edit_df = pd.read_sql_query("SELECT * FROM outings WHERE id=?", conn, params=(edit_id,))
                 conn.close()
-                st.toast("✅ 출타가 저장되었습니다.")
-                time.sleep(0.5) # 토스트 메시지를 잠깐 띄운 후 새로고침
-                st.rerun()
+                
+                if not edit_df.empty:
+                    e_row = edit_df.iloc[0]
+                    # Selectbox 기본값 인덱스 설정
+                    types = ["휴가", "평일외출", "주말외출", "주말외박"]
+                    e_idx = types.index(e_row['type']) if e_row['type'] in types else 0
+                    
+                    out_type = st.selectbox("출타 종류", types, index=e_idx, key="e_type")
+                    
+                    # 날짜 문자열을 날짜 객체로 변환
+                    s_date_obj = datetime.strptime(e_row['start_date'], "%Y-%m-%d").date()
+                    e_date_obj = datetime.strptime(e_row['end_date'], "%Y-%m-%d").date()
+                    
+                    if out_type in ["평일외출", "주말외출"]:
+                        out_date = st.date_input("출타일", value=s_date_obj, key="e_date1")
+                        start_d = end_d = out_date
+                    elif out_type == "주말외박":
+                        out_date = st.date_input("출타일 (복귀일 자동설정)", value=s_date_obj, key="e_date2")
+                        start_d = out_date
+                        end_d = out_date + timedelta(days=1)
+                        st.info(f"💡 복귀일: {end_d.strftime('%Y-%m-%d')}")
+                    else:
+                        c_d1, c_d2 = st.columns(2)
+                        start_d = c_d1.date_input("시작일", value=s_date_obj, key="e_sdate")
+                        end_d = c_d2.date_input("종료일", value=e_date_obj, key="e_edate")
+                        
+                    leave_t = st.text_input("휴가 종류", value=e_row['leave_type'], key="e_leave")
+                    dest = st.text_input("행선지", value=e_row['dest'], key="e_dest")
+                    
+                    col_btn1, col_btn2 = st.columns(2)
+                    if col_btn1.button("✅ 수정 완료", type="primary", use_container_width=True):
+                        conn = sqlite3.connect(DB_NAME)
+                        conn.execute("UPDATE outings SET type=?, start_date=?, end_date=?, leave_type=?, dest=? WHERE id=?", 
+                                     (out_type, str(start_d), str(end_d), leave_t, dest, edit_id))
+                        conn.commit()
+                        conn.close()
+                        st.session_state.edit_outing_id = None # 수정 모드 종료
+                        st.toast("✅ 수정이 완료되었습니다.")
+                        time.sleep(0.5)
+                        st.rerun()
+                    if col_btn2.button("❌ 취소", use_container_width=True):
+                        st.session_state.edit_outing_id = None
+                        st.rerun()
+            else:
+                # 일반 입력 모드
+                out_type = st.selectbox("출타 종류", ["휴가", "평일외출", "주말외출", "주말외박"])
+                if out_type in ["평일외출", "주말외출"]:
+                    out_date = st.date_input("출타일")
+                    start_d = end_d = out_date
+                elif out_type == "주말외박":
+                    out_date = st.date_input("출타일 (복귀일은 내일로 자동설정)")
+                    start_d = out_date
+                    end_d = out_date + timedelta(days=1)
+                    st.info(f"💡 복귀일: {end_d.strftime('%Y-%m-%d')}")
+                else:
+                    c_d1, c_d2 = st.columns(2)
+                    start_d = c_d1.date_input("시작일")
+                    end_d = c_d2.date_input("종료일")
+                    
+                leave_t = st.text_input("휴가 종류 (예: 연가, 포상)")
+                dest = st.text_input("행선지")
+                
+                if st.button("➕ 출타 추가", type="primary", use_container_width=True):
+                    conn = sqlite3.connect(DB_NAME)
+                    conn.execute("INSERT INTO outings (member, type, start_date, end_date, leave_type, dest) VALUES (?,?,?,?,?,?)", 
+                                 (member, out_type, str(start_d), str(end_d), leave_t, dest))
+                    conn.commit()
+                    conn.close()
+                    st.toast("✅ 출타가 저장되었습니다.")
+                    time.sleep(0.5)
+                    st.rerun()
                 
             st.markdown("---")
             
+            # [디스플레이 (피드백) 영역]
             st.write(f"📋 **등록된 출타 목록 ({member})**")
             conn = sqlite3.connect(DB_NAME)
             member_outings = pd.read_sql_query("SELECT id, type, start_date, end_date, leave_type, dest FROM outings WHERE member=?", conn, params=(member,))
@@ -120,15 +183,24 @@ if st.session_state.active_seat:
             if not member_outings.empty:
                 for _, row in member_outings.iterrows():
                     d_str = f"({row['start_date']})" if row['start_date'] == row['end_date'] else f"({row['start_date']}~{row['end_date']})"
-                    col_txt, col_btn = st.columns([4, 1])
+                    
+                    # 텍스트, 수정버튼, 삭제버튼 비율 (모바일 최적화)
+                    col_txt, col_edit, col_del = st.columns([5, 1, 1])
                     with col_txt:
                         st.caption(f"{row['type']} {d_str} / {row['leave_type']} / {row['dest']}")
-                    with col_btn:
+                    with col_edit:
+                        if st.button("✏️", key=f"edit_out_{row['id']}", help="수정"):
+                            st.session_state.edit_outing_id = row['id']
+                            st.rerun()
+                    with col_del:
                         if st.button("❌", key=f"del_out_{row['id']}", help="삭제"):
                             conn = sqlite3.connect(DB_NAME)
                             conn.execute("DELETE FROM outings WHERE id=?", (row['id'],))
                             conn.commit()
                             conn.close()
+                            # 만약 수정 중인 항목을 삭제했다면 상태도 초기화
+                            if st.session_state.edit_outing_id == row['id']:
+                                st.session_state.edit_outing_id = None
                             st.rerun()
             else:
                 st.caption("현재 등록된 출타가 없습니다.")
@@ -200,7 +272,7 @@ with st.expander("⬆️ 병기본 훈련 등록"):
         conn.close()
         st.toast("✅ 병기본 훈련 인원이 저장되었습니다.")
         time.sleep(0.5)
-        st.rerun() # 동기화 클럭 신호
+        st.rerun() 
 
 with st.expander("✂️ 이발 등록"):
     h_members = st.multiselect("이발 실시자", member_names)
