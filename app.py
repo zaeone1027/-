@@ -48,7 +48,7 @@ for _, row in members_df.iterrows():
 
 st.title("📱 생활관 결산 대시보드")
 
-# --- 1. 생활관 자리 배치도 (모바일 터치 최적화 2열) ---
+# --- 1. 생활관 자리 배치도 ---
 st.markdown("### 🛏️ 자리 선택")
 
 for row_idx in range(5):
@@ -74,33 +74,70 @@ for row_idx in range(5):
 
 st.markdown("---")
 
-# --- 2. 개별 현황 동적 폼 (모바일 수직 배치) ---
+# --- 2. 개별 현황 동적 폼 ---
 if st.session_state.active_seat:
     seat = st.session_state.active_seat
     if seat in seat_map:
         member = seat_map[seat]
         st.markdown(f"### 👉 [자리 {seat}] **{member}**")
         
-        # 좌우 배치를 수직(Vertical) 아코디언으로 변경
-        with st.expander("✈️ 출타 등록", expanded=True): # 기본 열림
+        with st.expander("✈️ 출타 등록 및 조회", expanded=True):
+            # [입력 폼 영역]
             out_type = st.selectbox("출타 종류", ["휴가", "평일외출", "주말외출", "주말외박"])
+            
+            # 조건부 렌더링 및 날짜 자동 연산
             if out_type in ["평일외출", "주말외출"]:
                 out_date = st.date_input("출타일")
                 start_d = end_d = out_date
+            elif out_type == "주말외박":
+                out_date = st.date_input("출타일 (복귀일은 내일로 자동설정)")
+                start_d = out_date
+                end_d = out_date + timedelta(days=1) # 1일 자동 덧셈 연산
+                st.info(f"💡 복귀일: {end_d.strftime('%Y-%m-%d')}")
             else:
-                c_d1, c_d2 = st.columns(2) # 날짜 선택기만 예외적으로 나란히 배치 (공간 절약)
+                c_d1, c_d2 = st.columns(2)
                 start_d = c_d1.date_input("시작일")
                 end_d = c_d2.date_input("종료일")
-            leave_t = st.text_input("휴가 종류 (예: 연가)")
+                
+            leave_t = st.text_input("휴가 종류 (예: 연가, 포상)")
             dest = st.text_input("행선지")
             
-            if st.button("출타 저장", type="primary", use_container_width=True):
+            if st.button("출타 추가", type="primary", use_container_width=True):
                 conn = sqlite3.connect(DB_NAME)
                 conn.execute("INSERT INTO outings (member, type, start_date, end_date, leave_type, dest) VALUES (?,?,?,?,?,?)", 
                              (member, out_type, str(start_d), str(end_d), leave_t, dest))
                 conn.commit()
                 conn.close()
-                st.success("저장 완료")
+                # 저장 후 화면을 새로고침하여 입력칸을 초기화하고 하단 목록을 갱신
+                st.rerun()
+                
+            st.markdown("---")
+            
+            # [디스플레이 (피드백) 영역]
+            st.write(f"📋 **등록된 출타 목록 ({member})**")
+            conn = sqlite3.connect(DB_NAME)
+            member_outings = pd.read_sql_query("SELECT id, type, start_date, end_date, leave_type, dest FROM outings WHERE member=?", conn, params=(member,))
+            conn.close()
+            
+            if not member_outings.empty:
+                for _, row in member_outings.iterrows():
+                    # 기간 문자열 포매팅
+                    d_str = f"({row['start_date']})" if row['start_date'] == row['end_date'] else f"({row['start_date']}~{row['end_date']})"
+                    
+                    # 삭제 버튼과 내용을 가로로 배치 (모바일 최적화)
+                    col_txt, col_btn = st.columns([4, 1])
+                    with col_txt:
+                        st.caption(f"{row['type']} {d_str} / {row['leave_type']} / {row['dest']}")
+                    with col_btn:
+                        # 잘못 등록한 출타를 개별적으로 지울 수 있도록 고유 Key를 가진 삭제 버튼 추가
+                        if st.button("❌", key=f"del_out_{row['id']}", help="삭제"):
+                            conn = sqlite3.connect(DB_NAME)
+                            conn.execute("DELETE FROM outings WHERE id=?", (row['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+            else:
+                st.caption("현재 등록된 출타가 없습니다.")
 
         with st.expander("🚫 열외 등록"):
             reason = st.selectbox("열외 사유", ["근무", "휴가", "외출", "외박", "상황병", "입실", "파견"])
@@ -147,7 +184,7 @@ else:
 
 st.markdown("---")
 
-# --- 3. 그룹 현황 입력 (모바일 수직 아코디언) ---
+# --- 3. 그룹 현황 입력 ---
 st.markdown("### 📝 종합 현황 등록")
 
 with st.expander("⬆️ 병기본 훈련 등록"):
@@ -188,7 +225,6 @@ with st.expander("⛪ 종교 행사 등록"):
         st.success("저장 완료")
 
 with st.expander("🍔 배달음식 등록"):
-    # 날짜와 시간은 가로가 짧으므로 2열 유지
     cd1, cd2 = st.columns(2)
     d_date = cd1.date_input("배달 일자")
     d_time = cd2.time_input("배달 시간")
@@ -204,7 +240,7 @@ with st.expander("🍔 배달음식 등록"):
 
 st.markdown("---")
 
-# --- 4. 자동 생성 결산 메시지 (변동 없음) ---
+# --- 4. 자동 생성 결산 메시지 ---
 st.markdown("### 📩 결산 메시지 복사")
 
 conn = sqlite3.connect(DB_NAME)
