@@ -9,6 +9,11 @@ st.set_page_config(page_title="생활관 종합 결산 시스템", layout="wide"
 def init_db():
     conn = sqlite3.connect('squad.db')
     c = conn.cursor()
+    
+    # ⚠️ 스키마 충돌을 해결하기 위해 이전 출타 테이블을 강제 삭제
+    c.execute('DROP TABLE IF EXISTS outings')
+    
+    # 새로운 구조로 테이블 생성
     c.execute('CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, rank TEXT, name TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS outings (id INTEGER PRIMARY KEY AUTOINCREMENT, member TEXT, type TEXT, start_date TEXT, end_date TEXT, leave_type TEXT, dest TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS exceptions (id INTEGER PRIMARY KEY AUTOINCREMENT, member TEXT, reason TEXT)')
@@ -18,7 +23,6 @@ def init_db():
     c.execute('CREATE TABLE IF NOT EXISTS deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, d_date TEXT, d_time TEXT, menu TEXT, members TEXT)')
     conn.commit()
     conn.close()
-
 def clean_past_data():
     # 현재 날짜 기준, 종료일이 지난 출타 기록은 DB에서 자동 삭제합니다. (Garbage Collection)
     today_str = datetime.now().date().strftime("%Y-%m-%d")
